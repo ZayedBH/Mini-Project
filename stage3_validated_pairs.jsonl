@@ -1,0 +1,2 @@
+{"intent": "sort_list", "instruction": "Sort a list", "fixed_code": "def solve(lst):\n    return sorted(lst)", "buggy_code": "def solve(lst):\n    return lst", "bug_type": "missing_sort"}
+{"intent": "gcd_computation", "instruction": "Compute GCD", "fixed_code": "import math\ndef solve(a, b):\n    return math.gcd(a, b)", "buggy_code": "def solve(a, b):\n    return a * b", "bug_type": "wrong_function"}

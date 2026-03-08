@@ -1,0 +1,3 @@
+{"intent": "sort_list", "instruction": "Sort a list", "fixed_code": "def solve(lst):\n    return sorted(lst)", "buggy_code": "def solve(lst):\n    return lst", "bug_type": "missing_sort"}
+{"intent": "factorial_computation", "instruction": "Compute factorial", "fixed_code": "def solve(n):\n    if n <= 1: return 1\n    return n * solve(n - 1)", "buggy_code": "def solve(n):\n    if n <= 1: return 0\n    return n * solve(n - 1)", "bug_type": "wrong_base_case"}
+{"intent": "gcd_computation", "instruction": "Compute GCD", "fixed_code": "import math\ndef solve(a, b):\n    return math.gcd(a, b)", "buggy_code": "import math\ndef solve(a, b):\n    return math.lcm(a, b)", "bug_type": "wrong_function"}
