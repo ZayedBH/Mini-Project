@@ -9,23 +9,19 @@ from intent_router import route_prompt
 
 
 ROOT_DIR = Path(__file__).resolve().parent
-MODEL_DIR = ROOT_DIR / "py_coder_final1"
+MODEL_DIR = Path(r"D:\miniproject\py_coder_final1")
 INDEX_FILE = ROOT_DIR / "index.html"
 HOST = "127.0.0.1"
 PORT = 8000
-CUDA_DEVICE = "cuda:0"
+DEVICE = "cpu"
 
 
 def select_torch_dtype() -> torch.dtype:
-    return torch.float16
+    return torch.float32
 
 
 def require_cuda():
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            "CUDA is required for this server but no GPU was detected. "
-            "Install a CUDA-enabled PyTorch build and run on an NVIDIA GPU."
-        )
+    pass  # CPU mode — no GPU required
 
 
 def load_model_and_tokenizer(model_path: Path):
@@ -44,8 +40,7 @@ def load_model_and_tokenizer(model_path: Path):
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         dtype=select_torch_dtype(),
-        device_map=CUDA_DEVICE,
-    )
+    ).to(DEVICE)
 
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -112,7 +107,7 @@ def generate_reply(tokenizer, model, messages, max_new_tokens=256):
         return "Out of Scope"
 
     model_inputs = tokenizer([prompt], return_tensors="pt")
-    model_inputs = {k: v.to(CUDA_DEVICE) for k, v in model_inputs.items()}
+    model_inputs = {k: v.to(DEVICE) for k, v in model_inputs.items()}
 
     with torch.inference_mode():
         output_ids = model.generate(
@@ -168,6 +163,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "cuda_available": torch.cuda.is_available(),
                     "cuda_device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+                    "running_device": DEVICE,
                     "model_device": model_device,
                 },
             )
@@ -209,8 +205,7 @@ def main():
     if not MODEL_DIR.exists():
         raise FileNotFoundError(f"Model directory not found: {MODEL_DIR}")
 
-    require_cuda()
-    print(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
+    print(f"Running on device: {DEVICE}")
     print(f"Loading model from: {MODEL_DIR}")
     tokenizer, model = load_model_and_tokenizer(MODEL_DIR)
     ChatHandler.tokenizer = tokenizer
