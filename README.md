@@ -80,7 +80,7 @@ These parameters are fixed prior to training.
   Inference                        8-bit (or lower) quantization
 
   Tokenizer                        SentencePiece BPE (reused from
-                                   DeepSeek-Coder-6.7B, frozen)
+                                   Qwen2.5-Coder-32B, frozen)
 
   Framework                        PyTorch / JAX
 
@@ -113,13 +113,13 @@ Each sample contains:
 
   Category       Samples      Percentage
   -------------- ------------ ------------
-  Pure Python    13,000       65%
-  NumPy          1,800        9%
-  Pandas         1,800        9%
-  Torch          1,400        7%
-  Scikit-learn   1,000        5%
-  Matplotlib     600          3%
-  Datasets       400          2%
+  Pure Python    55,900       65%
+  NumPy          7,740        9%
+  Pandas         7,740        9%
+  Torch          6,020        7%
+  Scikit-learn   4,300        5%
+  Matplotlib     2,580        3%
+  Datasets       1,720        2%
   **Total**      **~86,000**   **100%**
 
 ------------------------------------------------------------------------
