@@ -2,6 +2,12 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import time
+import subprocess
+import sys
+import threading
+from datetime import datetime
+import uuid
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -11,9 +17,72 @@ from intent_router import route_prompt
 ROOT_DIR = Path(__file__).resolve().parent
 MODEL_DIR = Path(r"D:\miniproject\py_coder_final1")
 INDEX_FILE = ROOT_DIR / "index.html"
+CONVERSATIONS_DIR = ROOT_DIR / "conversations"
 HOST = "127.0.0.1"
 PORT = 8000
 DEVICE = "cpu"
+
+
+class ConversationManager:
+    """Manages persistent conversation history."""
+    
+    def __init__(self, storage_dir: Path = CONVERSATIONS_DIR):
+        self.storage_dir = Path(storage_dir)
+        self.storage_dir.mkdir(exist_ok=True)
+        self.current_conversation_id = None
+        self.current_history = []
+    
+    def new_conversation(self) -> str:
+        """Start a new conversation and return its ID."""
+        self.current_conversation_id = str(uuid.uuid4())[:8]
+        self.current_history = []
+        return self.current_conversation_id
+    
+    def load_conversation(self, conversation_id: str) -> bool:
+        """Load an existing conversation by ID. Returns True if found."""
+        conv_file = self.storage_dir / f"{conversation_id}.json"
+        if conv_file.exists():
+            try:
+                with open(conv_file, 'r') as f:
+                    data = json.load(f)
+                    self.current_conversation_id = conversation_id
+                    self.current_history = data.get("history", [])
+                    return True
+            except:
+                return False
+        return False
+    
+    def add_message(self, role: str, content: str):
+        """Add a message to the current conversation."""
+        if not self.current_conversation_id:
+            self.new_conversation()
+        
+        self.current_history.append({
+            "role": role,
+            "content": content,
+            "timestamp": datetime.now().isoformat()
+        })
+        self._save()
+    
+    def get_history(self) -> list:
+        """Get the current conversation history."""
+        return self.current_history
+    
+    def _save(self):
+        """Save current conversation to disk."""
+        if not self.current_conversation_id:
+            return
+        
+        conv_file = self.storage_dir / f"{self.current_conversation_id}.json"
+        with open(conv_file, 'w') as f:
+            json.dump({
+                "id": self.current_conversation_id,
+                "created": datetime.now().isoformat(),
+                "history": self.current_history
+            }, f, indent=2)
+
+
+conversation_manager = ConversationManager()
 
 
 def select_torch_dtype() -> torch.dtype:

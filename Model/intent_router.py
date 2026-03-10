@@ -68,7 +68,7 @@ GREETING_KEYWORDS = [
     "good afternoon",
 ]
 
-SIMILARITY_THRESHOLD = 0.55
+SIMILARITY_THRESHOLD = 0.45
 
 # Load once at startup.
 model = SentenceTransformer("nomic-ai/nomic-embed-text-v1.5", trust_remote_code=True)
