@@ -1,0 +1,7 @@
+Test User Information
+======================
+Email: test@example.com
+Username: testuser
+User ID: 31ea1034-e396-4806-9b83-14acf94e6d34
+
+Use this user_id when testing the chat API.

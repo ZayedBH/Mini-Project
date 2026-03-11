@@ -1,0 +1,11 @@
+Local SQLite Database Setup Complete
+=====================================
+Email: test@example.com
+Username: testuser
+User ID: d6464cf1-17aa-454c-be59-06ae6b3d1763
+
+Use this user_id when testing the chat API.
+Database file: conversations.db
+
+Example API call:
+curl -X POST http://127.0.0.1:8000/api/login
