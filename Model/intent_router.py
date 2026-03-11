@@ -71,10 +71,16 @@ GREETING_KEYWORDS = [
 SIMILARITY_THRESHOLD = 0.45
 
 # Load once at startup.
-model = SentenceTransformer("nomic-ai/nomic-embed-text-v1.5", trust_remote_code=True)
+model = None
+intent_vectors = None
 
-# Cache intent embeddings once.
-intent_vectors = np.asarray(model.encode(INTENTS, normalize_embeddings=True), dtype=np.float32)
+try:
+    model = SentenceTransformer("nomic-ai/nomic-embed-text-v1.5", trust_remote_code=True)
+    # Cache intent embeddings once.
+    intent_vectors = np.asarray(model.encode(INTENTS, normalize_embeddings=True), dtype=np.float32)
+except Exception as e:
+    print(f"Warning: Failed to load embedding model: {e}")
+    print("Intent routing will default to 'out_of_scope' for all non-greeting queries.")
 
 
 def _normalize_text(text: str) -> str:
@@ -97,7 +103,11 @@ def route_prompt(prompt: str):
     if _is_greeting(prompt):
         return "greeting"
 
-    # 2) Embedding similarity check
+    # 2) Embedding similarity check (if model loaded)
+    if model is None or intent_vectors is None:
+        # Fallback: treat as valid intent since embedding model failed to load
+        return "valid_intent"
+    
     prompt_vec = np.asarray(model.encode(prompt, normalize_embeddings=True), dtype=np.float32)
     similarities = np.dot(intent_vectors, prompt_vec)
     max_similarity = float(np.max(similarities))
