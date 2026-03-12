@@ -718,6 +718,33 @@
         </div>`;
     }
 
+    // ── Context helpers ───────────────────────────────────
+    // Returns true when the prompt refers to something already said
+    function isFollowUpPrompt(text) {
+        const t = text.toLowerCase().trim();
+        // Referential pronouns / phrases pointing at previous content
+        if (/\b(this|that|it|above|the code|the function|the class|the error|those|them|these)\b/.test(t)) return true;
+        // Starts with a verb or question word that implies an existing subject
+        if (/^(explain|fix|debug|modify|change|update|improve|optimise|optimize|refactor|rewrite|simplify|can you|could you|what |how |why |is there|are there|what does|what is)/.test(t)) return true;
+        return false;
+    }
+
+    // Collect the last `maxPairs` complete user+assistant exchanges from history
+    function buildContext(history, currentText) {
+        const maxPairs = isFollowUpPrompt(currentText) ? 2 : 1;
+        const result = [];
+        let pairs = 0;
+        for (let i = history.length - 1; i >= 1 && pairs < maxPairs; i--) {
+            if (history[i].role === 'assistant' && history[i - 1].role === 'user') {
+                result.unshift(history[i]);     // assistant first (will be 2nd in order)
+                result.unshift(history[i - 1]); // user message
+                pairs++;
+                i--; // skip the user msg we already consumed (loop does one more --)
+            }
+        }
+        return result;
+    }
+
     // ── Messaging ─────────────────────────────────────────
     async function sendMessage() {
         const input = document.getElementById('message-input');
@@ -736,8 +763,8 @@
         showTypingIndicator();
 
         try {
-            const contextMessages = messages.slice(-3);
-            const allMessages     = [...contextMessages, { role: 'user', content: text }];
+            // Build context from complete exchanges; follow-up prompts get 2 pairs, others get 1
+            const allMessages = [...buildContext(messages, text), { role: 'user', content: text }];
 
             const res  = await fetch('/api/chat', {
                 method: 'POST',

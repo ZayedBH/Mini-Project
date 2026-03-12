@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import time
@@ -13,7 +14,7 @@ from urllib.parse import urlparse, parse_qs
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from intent_router import route_prompt
+from intent_router import route_prompt, FOLLOW_UP_RE
 from supabase_manager import SupabaseManager
 
 # Load environment variables
@@ -235,6 +236,11 @@ def format_response_for_ui(text: str) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
         return ""
+
+    # Strip training artefacts the model appends after its output.
+    for suffix in ("\nEnd.", "\nEnd", "End.", "\n###", "\nBuggy:", "\nFix:"):
+        if suffix in cleaned:
+            cleaned = cleaned[:cleaned.index(suffix)].strip()
     
     # Check if there's a code block in the response
     if "```" in cleaned:
@@ -270,39 +276,80 @@ def format_response_for_ui(text: str) -> str:
     return cleaned
 
 
+def _build_fix_prompt(instruction: str, buggy_code: str = "") -> str:
+    """Build a prompt in the exact format the model was trained on."""
+    return f"Fix: {instruction}\nBuggy:\n{buggy_code}\nFixed:\n"
+
+
 def generate_reply(tokenizer, model, messages, max_new_tokens=256):
     try:
-        prompt = build_instruction_prompt(messages)
-        if not prompt:
+        # Extract latest user message for routing.
+        latest_user_text = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                latest_user_text = (msg.get("content") or "").strip()
+                break
+
+        if not latest_user_text:
             return "Please enter a message."
 
-        route = route_prompt(prompt)
+        route = route_prompt(latest_user_text)
         if route == "greeting":
             return "Hi! I can help with Python coding tasks."
-        if route == "out_of_scope":
-            return "Out of Scope"
+
+        # Extract the last code block from prior assistant turn (if any).
+        # Cap at 1500 chars to avoid bloating the prompt beyond the model's useful range.
+        prior_code = ""
+        for msg in reversed(messages[:-1]):
+            if msg.get("role") == "assistant":
+                content = msg.get("content") or ""
+                if "```python" in content:
+                    parts = content.split("```python\n")
+                    if len(parts) > 1:
+                        prior_code = parts[1].split("```")[0].strip()[:1500]
+                break
+
+        # If the prompt references prior output, always use context path.
+        is_follow_up = bool(prior_code and FOLLOW_UP_RE.search(latest_user_text))
+
+        # Detect explain requests — reframe as "add comments" since the model
+        # was only trained on code generation, not text explanations.
+        EXPLAIN_RE = re.compile(
+            r'\b(explain|what does|what is|how does|why does|describe)\b',
+            re.IGNORECASE
+        )
+        is_explain = bool(EXPLAIN_RE.search(latest_user_text))
+
+        if not is_follow_up and route == "valid_intent":
+            # Fresh self-contained code generation request — no prior context needed.
+            prompt = _build_fix_prompt(latest_user_text)
+        elif prior_code:
+            if is_explain:
+                # Reframe explain as adding inline comments — within the model's capability.
+                instruction = "add detailed inline comments to explain what each part of this code does"
+            else:
+                instruction = latest_user_text
+            prompt = _build_fix_prompt(instruction, prior_code)
+        else:
+            # No prior code available — treat as fresh request.
+            prompt = _build_fix_prompt(latest_user_text)
 
         model_inputs = tokenizer([prompt], return_tensors="pt")
         model_inputs = {k: v.to(DEVICE) for k, v in model_inputs.items()}
 
+        # Encode "End." as an extra stop token so generation halts at the training boundary.
+        end_token_ids = tokenizer.encode("End.", add_special_tokens=False)
+        eos_ids = [tokenizer.eos_token_id] + end_token_ids if end_token_ids else [tokenizer.eos_token_id]
+
         with torch.inference_mode():
-            # Try to limit generation with stop sequences
-            stop_token_ids = []
-            try:
-                # Add some common stop markers
-                newline_token = tokenizer.encode('\n\n', add_special_tokens=False)[0] if '\n\n' in tokenizer.decode([tokenizer.encode('\n\n')[0]]) else None
-            except:
-                newline_token = None
-            
             output_ids = model.generate(
                 **model_inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
                 repetition_penalty=1.1,
                 no_repeat_ngram_size=4,
-                eos_token_id=tokenizer.eos_token_id,
+                eos_token_id=eos_ids,
                 pad_token_id=tokenizer.pad_token_id,
-                early_stopping=True,
             )
 
         prompt_len = model_inputs["input_ids"].shape[1]
@@ -310,8 +357,9 @@ def generate_reply(tokenizer, model, messages, max_new_tokens=256):
         decoded = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
         return format_response_for_ui(decoded)
     except Exception as e:
-        print(f"Error in generate_reply: {e}")
-        raise
+        import traceback
+        traceback.print_exc()
+        return f"Error generating response: {type(e).__name__}: {str(e)[:200]}"
 
 
 class ChatHandler(BaseHTTPRequestHandler):
@@ -420,11 +468,12 @@ class ChatHandler(BaseHTTPRequestHandler):
                 # Initialize conversation manager for this user
                 conv_manager = SupabaseConversationManager(user_id)
 
-                # Load conversation if provided, otherwise create new one
+                # Load conversation if provided, otherwise create new one.
+                # If the provided ID no longer exists (e.g. after a server restart),
+                # silently create a fresh conversation instead of returning 404.
                 if conversation_id:
                     if not conv_manager.load_conversation(conversation_id):
-                        self._send_json(404, {"error": "Conversation not found"})
-                        return
+                        conversation_id = conv_manager.new_conversation()
                 else:
                     conversation_id = conv_manager.new_conversation()
 
@@ -447,7 +496,12 @@ class ChatHandler(BaseHTTPRequestHandler):
                     "conversation_id": conversation_id
                 })
             except Exception as exc:
-                self._send_json(500, {"error": str(exc)})
+                import traceback
+                traceback.print_exc()
+                try:
+                    self._send_json(500, {"error": str(exc)[:500]})
+                except Exception:
+                    pass
             return
 
         # New conversation endpoint

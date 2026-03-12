@@ -68,7 +68,26 @@ GREETING_KEYWORDS = [
     "good afternoon",
 ]
 
-SIMILARITY_THRESHOLD = 0.45
+SIMILARITY_THRESHOLD = 0.30
+
+# Natural-language coding request patterns matched before embedding.
+# Note: 'explain', 'fix', 'debug' are intentionally excluded — they are ambiguous
+# (could be follow-ups) and are handled separately in generate_reply.
+CODING_REQUEST_RE = re.compile(
+    r'\b(write|create|make|build|generate|give me|show me|i need|'
+    r'how (do i|to|can i)|calculate|compute|'
+    r'code for|function for|script for|program for|example of|implement)\b',
+    re.IGNORECASE,
+)
+
+# Follow-up / referential patterns — these mean the user is referring to prior output.
+FOLLOW_UP_RE = re.compile(
+    r'\b(this|that|it|above|the code|the function|the class|the error|those|them|these)\b|'
+    r'^(explain|what does|what is|how does|why does|can you explain|could you explain|'
+    r'fix this|debug this|optimise this|optimize this|refactor this|improve this|'
+    r'add|change|update|modify|make it)',
+    re.IGNORECASE,
+)
 
 # Load once at startup.
 model = None
@@ -76,8 +95,9 @@ intent_vectors = None
 
 try:
     model = SentenceTransformer("nomic-ai/nomic-embed-text-v1.5", trust_remote_code=True)
-    # Cache intent embeddings once.
-    intent_vectors = np.asarray(model.encode(INTENTS, normalize_embeddings=True), dtype=np.float32)
+    # nomic-embed-text requires task-type prefixes for correct similarity.
+    prefixed_intents = ["search_document: " + intent for intent in INTENTS]
+    intent_vectors = np.asarray(model.encode(prefixed_intents, normalize_embeddings=True), dtype=np.float32)
 except Exception as e:
     print(f"Warning: Failed to load embedding model: {e}")
     print("Intent routing will default to 'out_of_scope' for all non-greeting queries.")
@@ -93,7 +113,7 @@ def _is_greeting(prompt: str) -> bool:
     if not normalized:
         return False
     for keyword in GREETING_KEYWORDS:
-        if keyword in normalized:
+        if re.search(r'\b' + re.escape(keyword) + r'\b', normalized):
             return True
     return False
 
@@ -103,16 +123,21 @@ def route_prompt(prompt: str):
     if _is_greeting(prompt):
         return "greeting"
 
-    # 2) Embedding similarity check (if model loaded)
-    if model is None or intent_vectors is None:
-        # Fallback: treat as valid intent since embedding model failed to load
+    # 2) Keyword pre-check — catch natural coding requests before embedding
+    if CODING_REQUEST_RE.search(_normalize_text(prompt)):
         return "valid_intent"
-    
-    prompt_vec = np.asarray(model.encode(prompt, normalize_embeddings=True), dtype=np.float32)
-    similarities = np.dot(intent_vectors, prompt_vec)
+
+    # 3) Embedding similarity check (if model loaded)
+    if model is None or intent_vectors is None:
+        return "valid_intent"
+
+    query_vec = np.asarray(
+        model.encode("search_query: " + prompt, normalize_embeddings=True), dtype=np.float32
+    )
+    similarities = np.dot(intent_vectors, query_vec)
     max_similarity = float(np.max(similarities))
 
-    # 3) Return route
+    # 4) Return route
     if max_similarity > SIMILARITY_THRESHOLD:
         return "valid_intent"
     return "out_of_scope"
