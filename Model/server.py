@@ -14,7 +14,7 @@ from urllib.parse import urlparse, parse_qs
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from intent_router import route_prompt, FOLLOW_UP_RE
+from intent_router import route_prompt, FOLLOW_UP_RE, UNSUPPORTED_LANGUAGE_RE
 from supabase_manager import SupabaseManager
 
 # Load environment variables
@@ -26,6 +26,9 @@ INDEX_FILE = ROOT_DIR / "index.html"
 CONVERSATIONS_DIR = ROOT_DIR / "conversations"
 HOST = "127.0.0.1"
 PORT = 8000
+UNSUPPORTED_LANGUAGE_RESPONSE = (
+    "I can only help with Python. Please ask your coding question in Python."
+)
 
 # Auto-detect GPU
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -242,6 +245,16 @@ def format_response_for_ui(text: str) -> str:
         if suffix in cleaned:
             cleaned = cleaned[:cleaned.index(suffix)].strip()
     
+    # Recover common truncation case: model emits an opening fence without closing it.
+    if cleaned.startswith("```") and cleaned.count("```") == 1:
+        candidate = cleaned[3:].strip()
+        if candidate.startswith("python"):
+            candidate = candidate[6:].strip()
+        elif candidate.startswith("py"):
+            candidate = candidate[2:].strip()
+        if is_probable_python_code(candidate):
+            return f"```python\n{candidate}\n```"
+
     # Check if there's a code block in the response
     if "```" in cleaned:
         # Extract ONLY the code from code block, ignore everything else
@@ -281,7 +294,56 @@ def _build_fix_prompt(instruction: str, buggy_code: str = "") -> str:
     return f"Fix: {instruction}\nBuggy:\n{buggy_code}\nFixed:\n"
 
 
-def generate_reply(tokenizer, model, messages, max_new_tokens=256):
+def _looks_truncated_output(text: str) -> bool:
+    s = (text or "").rstrip()
+    if not s:
+        return False
+
+    # Incomplete markdown fence.
+    if s.count("```") % 2 == 1:
+        return True
+
+    # Clear trailing operator / separator patterns.
+    trailing_fragments = (
+        "+", "-", "*", "/", "%", "=", "==", "!=", "<", ">", "<=", ">=",
+        "and", "or", "not", "(", "[", "{", ",", "\\",
+    )
+    if any(s.endswith(fragment) for fragment in trailing_fragments):
+        return True
+
+    # Unbalanced brackets are a strong truncation signal for code output.
+    if s.count("(") > s.count(")"):
+        return True
+    if s.count("[") > s.count("]"):
+        return True
+    if s.count("{") > s.count("}"):
+        return True
+
+    return False
+
+
+def _generate_segment(tokenizer, model, prompt_text: str, max_new_tokens: int) -> str:
+    model_inputs = tokenizer([prompt_text], return_tensors="pt")
+    model_inputs = {k: v.to(DEVICE) for k, v in model_inputs.items()}
+    eos_id = tokenizer.eos_token_id
+
+    with torch.inference_mode():
+        output_ids = model.generate(
+            **model_inputs,
+            max_new_tokens=max_new_tokens,
+            min_new_tokens=48,
+            do_sample=False,
+            repetition_penalty=1.02,
+            eos_token_id=eos_id,
+            pad_token_id=tokenizer.pad_token_id,
+        )
+
+    prompt_len = model_inputs["input_ids"].shape[1]
+    generated_ids = output_ids[0][prompt_len:]
+    return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+
+def generate_reply(tokenizer, model, messages, max_new_tokens=512):
     try:
         # Extract latest user message for routing.
         latest_user_text = ""
@@ -293,9 +355,15 @@ def generate_reply(tokenizer, model, messages, max_new_tokens=256):
         if not latest_user_text:
             return "Please enter a message."
 
+        # Defensive scope guard: refuse non-Python language requests early.
+        if UNSUPPORTED_LANGUAGE_RE.search(latest_user_text):
+            return UNSUPPORTED_LANGUAGE_RESPONSE
+
         route = route_prompt(latest_user_text)
         if route == "greeting":
             return "Hi! I can help with Python coding tasks."
+        if route == "unsupported_language":
+            return UNSUPPORTED_LANGUAGE_RESPONSE
 
         # Extract the last code block from prior assistant turn (if any).
         # Cap at 1500 chars to avoid bloating the prompt beyond the model's useful range.
@@ -334,28 +402,23 @@ def generate_reply(tokenizer, model, messages, max_new_tokens=256):
             # No prior code available — treat as fresh request.
             prompt = _build_fix_prompt(latest_user_text)
 
-        model_inputs = tokenizer([prompt], return_tensors="pt")
-        model_inputs = {k: v.to(DEVICE) for k, v in model_inputs.items()}
+        decoded = _generate_segment(tokenizer, model, prompt, max_new_tokens=max_new_tokens)
 
-        # Encode "End." as an extra stop token so generation halts at the training boundary.
-        end_token_ids = tokenizer.encode("End.", add_special_tokens=False)
-        eos_ids = [tokenizer.eos_token_id] + end_token_ids if end_token_ids else [tokenizer.eos_token_id]
+        # If generation stops in the middle of code, ask the model for continuation
+        # using the already generated text as prefix.
+        merged = decoded
+        for _ in range(2):
+            if not _looks_truncated_output(merged):
+                break
+            continuation_seed = prompt + merged
+            continuation = _generate_segment(tokenizer, model, continuation_seed, max_new_tokens=192)
+            if not continuation:
+                break
+            if continuation in merged:
+                break
+            merged = (merged + "\n" + continuation).strip()
 
-        with torch.inference_mode():
-            output_ids = model.generate(
-                **model_inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                repetition_penalty=1.1,
-                no_repeat_ngram_size=4,
-                eos_token_id=eos_ids,
-                pad_token_id=tokenizer.pad_token_id,
-            )
-
-        prompt_len = model_inputs["input_ids"].shape[1]
-        generated_ids = output_ids[0][prompt_len:]
-        decoded = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-        return format_response_for_ui(decoded)
+        return format_response_for_ui(merged)
     except Exception as e:
         import traceback
         traceback.print_exc()

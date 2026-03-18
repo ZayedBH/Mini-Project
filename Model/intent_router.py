@@ -89,6 +89,19 @@ FOLLOW_UP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Requests mentioning these languages should be rejected because this assistant
+# is intentionally scoped to Python-only help.
+# Symbol-based language names (e.g. c++, c#) are matched with lookarounds
+# instead of word boundaries so they are reliably detected.
+UNSUPPORTED_LANGUAGE_RE = re.compile(
+    r'(?:(?<!\w)c\s*\+\s*\+(?!\w)|'
+    r'(?<!\w)ca\s*\+\s*\+(?!\w)|'
+    r'(?<!\w)c\s*#(?!\w)|'
+    r'\bc\s*plus\s*plus\b|'
+    r'\b(?:cpp|csharp|java|javascript|typescript|kotlin|swift|rust|golang|php|ruby|scala)\b)',
+    re.IGNORECASE,
+)
+
 # Load once at startup.
 model = None
 intent_vectors = None
@@ -118,16 +131,27 @@ def _is_greeting(prompt: str) -> bool:
     return False
 
 
+def _mentions_unsupported_language(prompt: str) -> bool:
+    normalized = _normalize_text(prompt)
+    if not normalized:
+        return False
+    return bool(UNSUPPORTED_LANGUAGE_RE.search(normalized))
+
+
 def route_prompt(prompt: str):
     # 1) Greeting check
     if _is_greeting(prompt):
         return "greeting"
 
-    # 2) Keyword pre-check — catch natural coding requests before embedding
+    # 2) Hard language scope check
+    if _mentions_unsupported_language(prompt):
+        return "unsupported_language"
+
+    # 3) Keyword pre-check — catch natural coding requests before embedding
     if CODING_REQUEST_RE.search(_normalize_text(prompt)):
         return "valid_intent"
 
-    # 3) Embedding similarity check (if model loaded)
+    # 4) Embedding similarity check (if model loaded)
     if model is None or intent_vectors is None:
         return "valid_intent"
 
@@ -137,7 +161,7 @@ def route_prompt(prompt: str):
     similarities = np.dot(intent_vectors, query_vec)
     max_similarity = float(np.max(similarities))
 
-    # 4) Return route
+    # 5) Return route
     if max_similarity > SIMILARITY_THRESHOLD:
         return "valid_intent"
     return "out_of_scope"

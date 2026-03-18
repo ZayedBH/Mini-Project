@@ -21,6 +21,11 @@ async def chat(request: Request):
     if route == "greeting":
         return {"response": "Hi! I can help with Python coding tasks."}
 
+    if route == "unsupported_language":
+        return {
+            "response": "I can only help with Python. Please ask your coding question in Python."
+        }
+
     if route == "out_of_scope":
         return {"response": "Out of Scope"}
 
